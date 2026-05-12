@@ -1,0 +1,2 @@
+# The script uses only the Python standard library.
+# This file is kept so install_dependencies.bat can install future dependencies from one place.
