@@ -1,0 +1,27 @@
+{
+  "reddit": {
+    "client_id": "",
+    "client_secret": "",
+    "username": "",
+    "password": "",
+    "user_agent": "RedditStoryParser/1.0 by your_reddit_username"
+  },
+  "search": {
+    "keywords": [
+      "заработок",
+      "история успеха",
+      "разочарование"
+    ],
+    "subreddit": "",
+    "limit": 25,
+    "sort": "relevance",
+    "time_filter": "all"
+  },
+  "saving": {
+    "output_dir": "stories",
+    "min_chars": 1000,
+    "max_chars": 10000,
+    "sleep_seconds": 1.0,
+    "skip_nsfw": true
+  }
+}
