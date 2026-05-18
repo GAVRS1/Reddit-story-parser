@@ -21,7 +21,7 @@ from typing import Any, Callable, Iterable
 
 REDDIT_SEARCH_URL = "https://www.reddit.com/search.json"
 DEFAULT_CONFIG_PATH = "config.json"
-DEFAULT_USER_AGENT = "RedditStoryParser/1.0 by your_reddit_username"
+DEFAULT_USER_AGENT = "windows:reddit-story-parser:1.0 (by u/GAVRS1)"
 DEFAULT_CONFIG: dict[str, Any] = {
     "reddit": {
         "client_id": "",
@@ -50,6 +50,10 @@ LogCallback = Callable[[str], None]
 ProgressCallback = Callable[[int, int], None]
 ResultCallback = Callable[[dict[str, Any]], None]
 StopCallback = Callable[[], bool]
+
+
+class PublicRedditSearchBlockedError(RuntimeError):
+    """Raised when Reddit blocks unauthenticated public JSON search."""
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -236,12 +240,25 @@ def fetch_reddit_posts_public(config: dict[str, Any], query: str, limit: int) ->
 
     url = f"{base_url}?{urllib.parse.urlencode(params)}"
     user_agent = str(reddit_config.get("user_agent") or DEFAULT_USER_AGENT)
-    request = urllib.request.Request(url, headers={"User-Agent": user_agent})
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": user_agent,
+            "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    )
 
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        if exc.code == 403:
+            raise PublicRedditSearchBlockedError(
+                "Reddit заблокировал публичный поиск без авторизации. "
+                "Заполните блок Reddit API: client_id, client_secret, username, password и user_agent. "
+                "Для этого нужен Reddit app типа script на странице https://www.reddit.com/prefs/apps"
+            ) from exc
         raise RuntimeError(f"Reddit returned HTTP {exc.code}: {exc.reason}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Could not connect to Reddit: {exc.reason}") from exc

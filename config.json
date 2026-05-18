@@ -4,7 +4,7 @@
     "client_secret": "",
     "username": "",
     "password": "",
-    "user_agent": "RedditStoryParser/1.0 by your_reddit_username"
+    "user_agent": "windows:reddit-story-parser:1.0 (by u/GAVRS1)"
   },
   "search": {
     "keywords": [

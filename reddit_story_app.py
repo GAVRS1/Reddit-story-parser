@@ -236,6 +236,13 @@ class MainWindow(QMainWindow):
         api_layout.addWidget(self.password_edit, 1, 3)
         api_layout.addWidget(QLabel("User-Agent"), 2, 0)
         api_layout.addWidget(self.user_agent_edit, 2, 1, 1, 3)
+        api_hint = QLabel("Если Reddit возвращает 403 Blocked, заполните эти поля из Reddit app типа script.")
+        api_hint.setObjectName("hint")
+        api_hint.setWordWrap(True)
+        reddit_apps_btn = QPushButton("Открыть Reddit apps")
+        reddit_apps_btn.clicked.connect(self._open_reddit_apps)
+        api_layout.addWidget(api_hint, 3, 0, 1, 3)
+        api_layout.addWidget(reddit_apps_btn, 3, 3)
         settings_layout.addWidget(api_group)
 
         actions = QHBoxLayout()
@@ -456,6 +463,22 @@ class MainWindow(QMainWindow):
         self.summary_label.setText("Ошибка поиска")
         self._set_running(False)
         self._log(f"ERROR: {message}")
+        if "403" in message or "публичный поиск" in message:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle(APP_NAME)
+            box.setText("Reddit заблокировал публичный поиск без авторизации.")
+            box.setInformativeText(
+                "Заполните блок Reddit API данными из Reddit app типа script: "
+                "client_id, client_secret, username, password и user_agent."
+            )
+            open_button = box.addButton("Открыть Reddit apps", QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Ok)
+            box.exec()
+            if box.clickedButton() == open_button:
+                self._open_reddit_apps()
+            return
+
         QMessageBox.critical(self, APP_NAME, message)
 
     def _clear_thread_refs(self) -> None:
@@ -474,6 +497,9 @@ class MainWindow(QMainWindow):
     def _open_config_file(self) -> None:
         self._save_settings()
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(user_config_path().resolve())))
+
+    def _open_reddit_apps(self) -> None:
+        QDesktopServices.openUrl(QUrl("https://www.reddit.com/prefs/apps"))
 
     def _log(self, message: str) -> None:
         self.log_edit.appendPlainText(message)
@@ -496,6 +522,11 @@ QLabel#title {
 QLabel#subtitle {
     color: #64748b;
     font-size: 10.5pt;
+}
+
+QLabel#hint {
+    color: #64748b;
+    font-size: 9.5pt;
 }
 
 QLabel#cardTitle {
