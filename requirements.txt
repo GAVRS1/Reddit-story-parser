@@ -1,2 +1,2 @@
-# The script uses only the Python standard library.
-# This file is kept so install_dependencies.bat can install future dependencies from one place.
+PySide6>=6.7,<7.0
+pyinstaller>=6.0,<7.0

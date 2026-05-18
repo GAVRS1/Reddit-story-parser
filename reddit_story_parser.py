@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Search Reddit stories by keywords and save every unique story as a TXT file.
-
-The script can read all settings from config.json. If Reddit API credentials are
-filled in the config, it searches through Reddit OAuth. If the credentials are
-empty, it falls back to Reddit's public JSON search endpoint.
-"""
+"""Search Reddit stories by keywords and save every unique story as TXT."""
 
 from __future__ import annotations
 
@@ -22,7 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 REDDIT_SEARCH_URL = "https://www.reddit.com/search.json"
 DEFAULT_CONFIG_PATH = "config.json"
@@ -36,7 +31,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "user_agent": DEFAULT_USER_AGENT,
     },
     "search": {
-        "keywords": ["заработок", "история успеха", "разочарование"],
+        "keywords": ["marriage", "disappointment", "bad relationship"],
         "subreddit": "",
         "limit": 25,
         "sort": "relevance",
@@ -51,69 +46,27 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
 }
 
+LogCallback = Callable[[str], None]
+ProgressCallback = Callable[[int, int], None]
+ResultCallback = Callable[[dict[str, Any]], None]
+StopCallback = Callable[[], bool]
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Find Reddit text posts by keywords and save unique stories to TXT files. "
-            "Settings are read from config.json by default."
-        )
+        description="Find Reddit text posts by keywords and save unique stories to TXT files."
     )
-    parser.add_argument(
-        "keywords",
-        nargs="*",
-        help="Keywords for Reddit search. Overrides search.keywords from config.json.",
-    )
-    parser.add_argument(
-        "--config",
-        default=DEFAULT_CONFIG_PATH,
-        help="Path to JSON config file (default: config.json).",
-    )
-    parser.add_argument(
-        "-o",
-        "--output-dir",
-        help="Folder where TXT files will be saved. Overrides saving.output_dir.",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        help="Maximum number of Reddit posts to request. Overrides search.limit.",
-    )
-    parser.add_argument(
-        "--min-chars",
-        type=int,
-        help="Minimum story length in characters. Overrides saving.min_chars.",
-    )
-    parser.add_argument(
-        "--max-chars",
-        type=int,
-        help="Maximum story length to save in characters. Overrides saving.max_chars.",
-    )
-    parser.add_argument(
-        "--sort",
-        choices=("relevance", "hot", "top", "new", "comments"),
-        help="Reddit search sorting mode. Overrides search.sort.",
-    )
-    parser.add_argument(
-        "--time",
-        dest="time_filter",
-        choices=("hour", "day", "week", "month", "year", "all"),
-        help="Time filter for Reddit search. Overrides search.time_filter.",
-    )
-    parser.add_argument(
-        "--subreddit",
-        help="Optional subreddit name to search inside. Overrides search.subreddit.",
-    )
-    parser.add_argument(
-        "--sleep",
-        dest="sleep_seconds",
-        type=float,
-        help="Pause in seconds before saving the next story. Overrides saving.sleep_seconds.",
-    )
-    parser.add_argument(
-        "--user-agent",
-        help="HTTP/API User-Agent sent to Reddit. Overrides reddit.user_agent.",
-    )
+    parser.add_argument("keywords", nargs="*", help="Keywords for Reddit search.")
+    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH, help="Path to JSON config file.")
+    parser.add_argument("-o", "--output-dir", help="Folder where TXT files will be saved.")
+    parser.add_argument("--limit", type=int, help="Maximum number of Reddit posts to request.")
+    parser.add_argument("--min-chars", type=int, help="Minimum story length in characters.")
+    parser.add_argument("--max-chars", type=int, help="Maximum story length to save in characters.")
+    parser.add_argument("--sort", choices=("relevance", "hot", "top", "new", "comments"))
+    parser.add_argument("--time", dest="time_filter", choices=("hour", "day", "week", "month", "year", "all"))
+    parser.add_argument("--subreddit", help="Optional subreddit name to search inside.")
+    parser.add_argument("--sleep", dest="sleep_seconds", type=float, help="Pause before saving next story.")
+    parser.add_argument("--user-agent", help="HTTP/API User-Agent sent to Reddit.")
     return parser.parse_args(argv)
 
 
@@ -129,18 +82,22 @@ def deep_merge(defaults: dict[str, Any], overrides: dict[str, Any]) -> dict[str,
 
 def load_config(path: Path) -> dict[str, Any]:
     if not path.exists():
-        print(f"Config file not found: {path}. Using built-in defaults.")
         return copy.deepcopy(DEFAULT_CONFIG)
 
     try:
         user_config = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise SystemExit(f"Ошибка чтения JSON config-файла {path}: {exc}") from exc
+        raise RuntimeError(f"Config file {path} contains invalid JSON: {exc}") from exc
 
     if not isinstance(user_config, dict):
-        raise SystemExit(f"Config file {path} must contain a JSON object.")
+        raise RuntimeError(f"Config file {path} must contain a JSON object.")
 
     return deep_merge(copy.deepcopy(DEFAULT_CONFIG), user_config)
+
+
+def save_config(path: Path, config: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def apply_cli_overrides(config: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -167,13 +124,13 @@ def apply_cli_overrides(config: dict[str, Any], args: argparse.Namespace) -> dic
     return config
 
 
-def build_query(keywords: Iterable[str]) -> str:
+def build_query(keywords: Iterable[str], *, allow_prompt: bool = False) -> str:
     words = [str(word).strip() for word in keywords if str(word).strip()]
-    if not words:
-        entered = input("Введите ключевые слова через пробел: ").strip()
+    if not words and allow_prompt:
+        entered = input("Enter keywords separated by spaces: ").strip()
         words = entered.split()
     if not words:
-        raise SystemExit("Нужно указать хотя бы одно ключевое слово в config.json или аргументах запуска.")
+        raise RuntimeError("Specify at least one keyword in config.json or launch arguments.")
     return " ".join(words)
 
 
@@ -208,15 +165,15 @@ def fetch_reddit_oauth_token(reddit_config: dict[str, Any]) -> str:
         with urllib.request.urlopen(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise SystemExit(f"Reddit OAuth вернул HTTP {exc.code}: {exc.reason}") from exc
+        raise RuntimeError(f"Reddit OAuth returned HTTP {exc.code}: {exc.reason}") from exc
     except urllib.error.URLError as exc:
-        raise SystemExit(f"Не удалось подключиться к Reddit OAuth: {exc.reason}") from exc
+        raise RuntimeError(f"Could not connect to Reddit OAuth: {exc.reason}") from exc
     except json.JSONDecodeError as exc:
-        raise SystemExit("Reddit OAuth вернул ответ, который не похож на JSON.") from exc
+        raise RuntimeError("Reddit OAuth returned a non-JSON response.") from exc
 
     access_token = payload.get("access_token")
     if not access_token:
-        raise SystemExit(f"Reddit OAuth не вернул access_token: {payload}")
+        raise RuntimeError(f"Reddit OAuth did not return access_token: {payload}")
     return str(access_token)
 
 
@@ -242,39 +199,20 @@ def fetch_reddit_posts_oauth(config: dict[str, Any], query: str, limit: int) -> 
 
     url = f"{base_url}?{urllib.parse.urlencode(params)}"
     user_agent = str(reddit_config.get("user_agent") or DEFAULT_USER_AGENT)
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "User-Agent": user_agent,
-        },
-    )
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {access_token}", "User-Agent": user_agent})
 
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise SystemExit(f"Reddit API вернул HTTP {exc.code}: {exc.reason}") from exc
+        raise RuntimeError(f"Reddit API returned HTTP {exc.code}: {exc.reason}") from exc
     except urllib.error.URLError as exc:
-        raise SystemExit(f"Не удалось подключиться к Reddit API: {exc.reason}") from exc
+        raise RuntimeError(f"Could not connect to Reddit API: {exc.reason}") from exc
     except json.JSONDecodeError as exc:
-        raise SystemExit("Reddit API вернул ответ, который не похож на JSON.") from exc
+        raise RuntimeError("Reddit API returned a non-JSON response.") from exc
 
     children = payload.get("data", {}).get("children", [])
     return [child.get("data", {}) for child in children]
-
-
-def fetch_reddit_posts(config: dict[str, Any], query: str) -> list[dict[str, Any]]:
-    reddit_config = config["reddit"]
-    search_config = config["search"]
-    limit = max(1, min(int(search_config["limit"]), 100))
-
-    if configured_reddit_login(reddit_config):
-        print("Использую вход через Reddit API из config.json.")
-        return fetch_reddit_posts_oauth(config, query, limit)
-
-    print("Данные входа Reddit не заполнены. Использую публичный JSON endpoint без авторизации.")
-    return fetch_reddit_posts_public(config, query, limit)
 
 
 def fetch_reddit_posts_public(config: dict[str, Any], query: str, limit: int) -> list[dict[str, Any]]:
@@ -304,14 +242,29 @@ def fetch_reddit_posts_public(config: dict[str, Any], query: str, limit: int) ->
         with urllib.request.urlopen(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise SystemExit(f"Reddit вернул HTTP {exc.code}: {exc.reason}") from exc
+        raise RuntimeError(f"Reddit returned HTTP {exc.code}: {exc.reason}") from exc
     except urllib.error.URLError as exc:
-        raise SystemExit(f"Не удалось подключиться к Reddit: {exc.reason}") from exc
+        raise RuntimeError(f"Could not connect to Reddit: {exc.reason}") from exc
     except json.JSONDecodeError as exc:
-        raise SystemExit("Reddit вернул ответ, который не похож на JSON.") from exc
+        raise RuntimeError("Reddit returned a non-JSON response.") from exc
 
     children = payload.get("data", {}).get("children", [])
     return [child.get("data", {}) for child in children]
+
+
+def fetch_reddit_posts(config: dict[str, Any], query: str, *, log: LogCallback | None = None) -> list[dict[str, Any]]:
+    reddit_config = config["reddit"]
+    search_config = config["search"]
+    limit = max(1, min(int(search_config["limit"]), 100))
+
+    if configured_reddit_login(reddit_config):
+        if log:
+            log("Using Reddit OAuth credentials from config.")
+        return fetch_reddit_posts_oauth(config, query, limit)
+
+    if log:
+        log("Reddit credentials are empty. Using public JSON search.")
+    return fetch_reddit_posts_public(config, query, limit)
 
 
 def normalize_story_text(text: str) -> str:
@@ -389,8 +342,7 @@ def save_story(output_dir: Path, post: dict[str, Any], text: str, content_hash: 
     output_dir.mkdir(parents=True, exist_ok=True)
     title = post.get("title") or "Untitled"
     reddit_id = post.get("id") or content_hash[:10]
-    filename = f"{safe_filename(title)}_{reddit_id}.txt"
-    path = output_dir / filename
+    path = output_dir / f"{safe_filename(title)}_{reddit_id}.txt"
 
     counter = 2
     while path.exists():
@@ -407,63 +359,123 @@ def is_self_text_post(post: dict[str, Any], skip_nsfw: bool) -> bool:
     return bool(post.get("is_self"))
 
 
-def main() -> int:
-    args = parse_args()
-    config = apply_cli_overrides(load_config(Path(args.config)), args)
-    query = build_query(config["search"].get("keywords", []))
+def reddit_url_for_post(post: dict[str, Any]) -> str:
+    permalink = post.get("permalink") or ""
+    return f"https://www.reddit.com{permalink}" if permalink else str(post.get("url") or "")
+
+
+def run_search(
+    config: dict[str, Any],
+    *,
+    log: LogCallback | None = None,
+    progress: ProgressCallback | None = None,
+    result: ResultCallback | None = None,
+    should_stop: StopCallback | None = None,
+) -> dict[str, Any]:
+    search_config = config["search"]
     saving_config = config["saving"]
-    output_dir = Path(str(saving_config["output_dir"]))
+    query = build_query(search_config.get("keywords", []))
+    output_dir = Path(str(saving_config["output_dir"])).expanduser()
     min_chars = int(saving_config["min_chars"])
     max_chars = int(saving_config["max_chars"])
     sleep_seconds = float(saving_config["sleep_seconds"])
     skip_nsfw = bool(saving_config.get("skip_nsfw", True))
     existing_ids, existing_hashes = load_existing_signatures(output_dir)
 
-    print(f"Ищу истории по запросу: {query!r}")
-    posts = fetch_reddit_posts(config, query)
-    print(f"Получено постов из поиска Reddit: {len(posts)}")
+    if log:
+        log(f"Searching Reddit for: {query!r}")
+    posts = fetch_reddit_posts(config, query, log=log)
+    total = len(posts)
+    if log:
+        log(f"Received posts: {total}")
+    if progress:
+        progress(0, total)
 
     saved = 0
     skipped = 0
+    results: list[dict[str, Any]] = []
 
-    for post in posts:
-        if not is_self_text_post(post, skip_nsfw):
-            skipped += 1
-            continue
+    for index, post in enumerate(posts, start=1):
+        if should_stop and should_stop():
+            if log:
+                log("Search stopped by user.")
+            break
 
         title = post.get("title") or "Untitled"
-        reddit_id = post.get("id") or ""
+        reddit_id = str(post.get("id") or "")
         text = normalize_story_text(post.get("selftext") or "")
+        item = {
+            "title": title,
+            "subreddit": post.get("subreddit", "unknown"),
+            "url": reddit_url_for_post(post),
+            "chars": len(text),
+            "status": "skipped",
+            "path": "",
+        }
 
-        if len(text) < min_chars:
+        if not is_self_text_post(post, skip_nsfw):
+            item["status"] = "skipped: not text or NSFW"
             skipped += 1
-            continue
-
-        if max_chars > 0 and len(text) > max_chars:
-            text = text[:max_chars].rstrip() + "\n\n[Story truncated by saving.max_chars]"
-
-        content_hash = story_hash(title, text)
-        if reddit_id in existing_ids or content_hash in existing_hashes:
-            print(f"Пропуск дубликата: {title}")
+        elif len(text) < min_chars:
+            item["status"] = f"skipped: shorter than {min_chars}"
             skipped += 1
-            continue
+        else:
+            if max_chars > 0 and len(text) > max_chars:
+                text = text[:max_chars].rstrip() + "\n\n[Story truncated by saving.max_chars]"
+                item["chars"] = len(text)
 
-        path = save_story(output_dir, post, text, content_hash)
-        existing_ids.add(reddit_id)
-        existing_hashes.add(content_hash)
-        saved += 1
-        print(f"Сохранено: {path}")
-        time.sleep(max(0.0, sleep_seconds))
+            content_hash = story_hash(title, text)
+            if reddit_id in existing_ids or content_hash in existing_hashes:
+                item["status"] = "skipped: duplicate"
+                skipped += 1
+            else:
+                path = save_story(output_dir, post, text, content_hash)
+                existing_ids.add(reddit_id)
+                existing_hashes.add(content_hash)
+                item["status"] = "saved"
+                item["path"] = str(path)
+                saved += 1
+                if log:
+                    log(f"Saved: {path}")
+                time.sleep(max(0.0, sleep_seconds))
 
-    summary = textwrap.dedent(
-        f"""
-        Готово.
-        Сохранено новых историй: {saved}
-        Пропущено постов: {skipped}
-        Папка: {output_dir.resolve()}
-        """
-    ).strip()
-    print(summary)
+        results.append(item)
+        if result:
+            result(item)
+        if progress:
+            progress(index, total)
+
+    summary = {
+        "saved": saved,
+        "skipped": skipped,
+        "total": total,
+        "output_dir": str(output_dir.resolve()),
+        "results": results,
+    }
+    if log:
+        log(f"Done. Saved: {saved}. Skipped: {skipped}. Folder: {output_dir.resolve()}")
+    return summary
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        config = apply_cli_overrides(load_config(Path(args.config)), args)
+        summary = run_search(config, log=print)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print(
+        textwrap.dedent(
+            f"""
+            Done.
+            Saved new stories: {summary['saved']}
+            Skipped posts: {summary['skipped']}
+            Folder: {summary['output_dir']}
+            """
+        ).strip()
+    )
     return 0
 
 
