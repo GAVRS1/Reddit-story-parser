@@ -24,6 +24,8 @@ DEFAULT_CONFIG_PATH = "config.json"
 DEFAULT_USER_AGENT = "windows:reddit-story-parser:1.0 (by u/GAVRS1)"
 DEFAULT_CONFIG: dict[str, Any] = {
     "reddit": {
+        "access_token": "",
+        "cookie": "",
         "client_id": "",
         "client_secret": "",
         "username": "",
@@ -143,6 +145,21 @@ def configured_reddit_login(reddit_config: dict[str, Any]) -> bool:
     return all(str(reddit_config.get(key, "")).strip() for key in required)
 
 
+def configured_access_token(reddit_config: dict[str, Any]) -> bool:
+    return bool(str(reddit_config.get("access_token", "")).strip())
+
+
+def configured_cookie(reddit_config: dict[str, Any]) -> bool:
+    return bool(str(reddit_config.get("cookie", "")).strip())
+
+
+def bearer_value(value: str) -> str:
+    token = value.strip()
+    if token.lower().startswith("bearer "):
+        return token
+    return f"Bearer {token}"
+
+
 def fetch_reddit_oauth_token(reddit_config: dict[str, Any]) -> str:
     credentials = f"{reddit_config['client_id']}:{reddit_config['client_secret']}"
     encoded_credentials = base64.b64encode(credentials.encode("utf-8")).decode("ascii")
@@ -181,10 +198,21 @@ def fetch_reddit_oauth_token(reddit_config: dict[str, Any]) -> str:
     return str(access_token)
 
 
-def fetch_reddit_posts_oauth(config: dict[str, Any], query: str, limit: int) -> list[dict[str, Any]]:
+def fetch_reddit_posts_with_access_token(config: dict[str, Any], query: str, limit: int) -> list[dict[str, Any]]:
+    access_token = str(config["reddit"].get("access_token", "")).strip()
+    return fetch_reddit_posts_oauth(config, query, limit, access_token=access_token)
+
+
+def fetch_reddit_posts_oauth(
+    config: dict[str, Any],
+    query: str,
+    limit: int,
+    *,
+    access_token: str | None = None,
+) -> list[dict[str, Any]]:
     reddit_config = config["reddit"]
     search_config = config["search"]
-    access_token = fetch_reddit_oauth_token(reddit_config)
+    access_token = access_token or fetch_reddit_oauth_token(reddit_config)
     params = {
         "q": query,
         "limit": str(limit),
@@ -203,7 +231,7 @@ def fetch_reddit_posts_oauth(config: dict[str, Any], query: str, limit: int) -> 
 
     url = f"{base_url}?{urllib.parse.urlencode(params)}"
     user_agent = str(reddit_config.get("user_agent") or DEFAULT_USER_AGENT)
-    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {access_token}", "User-Agent": user_agent})
+    request = urllib.request.Request(url, headers={"Authorization": bearer_value(access_token), "User-Agent": user_agent})
 
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
@@ -214,6 +242,58 @@ def fetch_reddit_posts_oauth(config: dict[str, Any], query: str, limit: int) -> 
         raise RuntimeError(f"Could not connect to Reddit API: {exc.reason}") from exc
     except json.JSONDecodeError as exc:
         raise RuntimeError("Reddit API returned a non-JSON response.") from exc
+
+    children = payload.get("data", {}).get("children", [])
+    return [child.get("data", {}) for child in children]
+
+
+def fetch_reddit_posts_cookie(config: dict[str, Any], query: str, limit: int) -> list[dict[str, Any]]:
+    search_config = config["search"]
+    reddit_config = config["reddit"]
+    params = {
+        "q": query,
+        "limit": str(limit),
+        "sort": str(search_config["sort"]),
+        "t": str(search_config["time_filter"]),
+        "type": "link",
+        "raw_json": "1",
+    }
+
+    subreddit_name = str(search_config.get("subreddit") or "").strip()
+    if subreddit_name:
+        base_url = f"https://www.reddit.com/r/{urllib.parse.quote(subreddit_name)}/search.json"
+        params["restrict_sr"] = "1"
+    else:
+        base_url = REDDIT_SEARCH_URL
+
+    url = f"{base_url}?{urllib.parse.urlencode(params)}"
+    user_agent = str(reddit_config.get("user_agent") or DEFAULT_USER_AGENT)
+    cookie = str(reddit_config.get("cookie") or "").strip()
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": user_agent,
+            "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cookie": cookie,
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 403:
+            raise PublicRedditSearchBlockedError(
+                "Reddit не принял cookie и вернул 403 Blocked. "
+                "Проверьте, что cookie скопированы полностью из авторизованной сессии Reddit, "
+                "или попробуйте Bearer token."
+            ) from exc
+        raise RuntimeError(f"Reddit returned HTTP {exc.code}: {exc.reason}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Could not connect to Reddit: {exc.reason}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Reddit returned a non-JSON response.") from exc
 
     children = payload.get("data", {}).get("children", [])
     return [child.get("data", {}) for child in children]
@@ -273,6 +353,16 @@ def fetch_reddit_posts(config: dict[str, Any], query: str, *, log: LogCallback |
     reddit_config = config["reddit"]
     search_config = config["search"]
     limit = max(1, min(int(search_config["limit"]), 100))
+
+    if configured_access_token(reddit_config):
+        if log:
+            log("Using Bearer token from settings.")
+        return fetch_reddit_posts_with_access_token(config, query, limit)
+
+    if configured_cookie(reddit_config):
+        if log:
+            log("Using Reddit cookies from settings.")
+        return fetch_reddit_posts_cookie(config, query, limit)
 
     if configured_reddit_login(reddit_config):
         if log:

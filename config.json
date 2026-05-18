@@ -1,5 +1,7 @@
 {
   "reddit": {
+    "access_token": "",
+    "cookie": "",
     "client_id": "",
     "client_secret": "",
     "username": "",

@@ -215,10 +215,16 @@ class MainWindow(QMainWindow):
         save_layout.addWidget(self.skip_nsfw_check, 2, 2, 1, 2)
         settings_layout.addWidget(save_group)
 
-        api_group = QGroupBox("Reddit API (необязательно)")
+        api_group = QGroupBox("Вход Reddit (необязательно)")
         api_layout = QGridLayout(api_group)
         api_layout.setHorizontalSpacing(12)
         api_layout.setVerticalSpacing(10)
+        self.access_token_edit = QLineEdit()
+        self.access_token_edit.setEchoMode(QLineEdit.Password)
+        self.access_token_edit.setPlaceholderText("Bearer token из авторизованной сессии")
+        self.cookie_edit = QPlainTextEdit()
+        self.cookie_edit.setPlaceholderText("Cookie header целиком, например: reddit_session=...; loid=...; ...")
+        self.cookie_edit.setMaximumHeight(70)
         self.client_id_edit = QLineEdit()
         self.client_secret_edit = QLineEdit()
         self.client_secret_edit.setEchoMode(QLineEdit.Password)
@@ -226,23 +232,27 @@ class MainWindow(QMainWindow):
         self.password_edit = QLineEdit()
         self.password_edit.setEchoMode(QLineEdit.Password)
         self.user_agent_edit = QLineEdit()
-        api_layout.addWidget(QLabel("Client ID"), 0, 0)
-        api_layout.addWidget(self.client_id_edit, 0, 1)
-        api_layout.addWidget(QLabel("Secret"), 0, 2)
-        api_layout.addWidget(self.client_secret_edit, 0, 3)
-        api_layout.addWidget(QLabel("Username"), 1, 0)
-        api_layout.addWidget(self.username_edit, 1, 1)
-        api_layout.addWidget(QLabel("Password"), 1, 2)
-        api_layout.addWidget(self.password_edit, 1, 3)
-        api_layout.addWidget(QLabel("User-Agent"), 2, 0)
-        api_layout.addWidget(self.user_agent_edit, 2, 1, 1, 3)
-        api_hint = QLabel("Если Reddit возвращает 403 Blocked, заполните эти поля из Reddit app типа script.")
+        api_layout.addWidget(QLabel("Token"), 0, 0)
+        api_layout.addWidget(self.access_token_edit, 0, 1, 1, 3)
+        api_layout.addWidget(QLabel("Cookie"), 1, 0)
+        api_layout.addWidget(self.cookie_edit, 1, 1, 1, 3)
+        api_layout.addWidget(QLabel("Client ID"), 2, 0)
+        api_layout.addWidget(self.client_id_edit, 2, 1)
+        api_layout.addWidget(QLabel("Secret"), 2, 2)
+        api_layout.addWidget(self.client_secret_edit, 2, 3)
+        api_layout.addWidget(QLabel("Username"), 3, 0)
+        api_layout.addWidget(self.username_edit, 3, 1)
+        api_layout.addWidget(QLabel("Password"), 3, 2)
+        api_layout.addWidget(self.password_edit, 3, 3)
+        api_layout.addWidget(QLabel("User-Agent"), 4, 0)
+        api_layout.addWidget(self.user_agent_edit, 4, 1, 1, 3)
+        api_hint = QLabel("Приоритет входа: Bearer token, затем Cookie, затем Client ID/Secret. Если все пусто, будет публичный поиск.")
         api_hint.setObjectName("hint")
         api_hint.setWordWrap(True)
         reddit_apps_btn = QPushButton("Открыть Reddit apps")
         reddit_apps_btn.clicked.connect(self._open_reddit_apps)
-        api_layout.addWidget(api_hint, 3, 0, 1, 3)
-        api_layout.addWidget(reddit_apps_btn, 3, 3)
+        api_layout.addWidget(api_hint, 5, 0, 1, 3)
+        api_layout.addWidget(reddit_apps_btn, 5, 3)
         settings_layout.addWidget(api_group)
 
         actions = QHBoxLayout()
@@ -350,6 +360,8 @@ class MainWindow(QMainWindow):
         self.max_chars_spin.setValue(int(saving.get("max_chars", 10000)))
         self.sleep_spin.setValue(float(saving.get("sleep_seconds", 1.0)))
         self.skip_nsfw_check.setChecked(bool(saving.get("skip_nsfw", True)))
+        self.access_token_edit.setText(str(reddit.get("access_token", "")))
+        self.cookie_edit.setPlainText(str(reddit.get("cookie", "")))
         self.client_id_edit.setText(str(reddit.get("client_id", "")))
         self.client_secret_edit.setText(str(reddit.get("client_secret", "")))
         self.username_edit.setText(str(reddit.get("username", "")))
@@ -362,6 +374,8 @@ class MainWindow(QMainWindow):
         output_dir = Path(self.output_edit.text().strip() or str(default_output_dir())).expanduser()
         return {
             "reddit": {
+                "access_token": self.access_token_edit.text().strip(),
+                "cookie": self.cookie_edit.toPlainText().strip(),
                 "client_id": self.client_id_edit.text().strip(),
                 "client_secret": self.client_secret_edit.text().strip(),
                 "username": self.username_edit.text().strip(),
@@ -469,8 +483,8 @@ class MainWindow(QMainWindow):
             box.setWindowTitle(APP_NAME)
             box.setText("Reddit заблокировал публичный поиск без авторизации.")
             box.setInformativeText(
-                "Заполните блок Reddit API данными из Reddit app типа script: "
-                "client_id, client_secret, username, password и user_agent."
+                "Заполните Bearer token или Cookie из авторизованной сессии Reddit. "
+                "Если есть Reddit app, можно использовать client_id, client_secret, username и password."
             )
             open_button = box.addButton("Открыть Reddit apps", QMessageBox.ActionRole)
             box.addButton(QMessageBox.Ok)
